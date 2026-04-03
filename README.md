@@ -15,6 +15,8 @@ Secure inter-agent communication framework using Redis as the transport layer wi
 ✅ **Persistent Ring Buffer** — Last 500 messages per channel, cursor-based catch-up
 ✅ **Message Correlation** — UUID-based request tracking
 ✅ **Timeout Handling** — Configurable wait-for-reply with TTL
+✅ **Human MFA** — TOTP provisioning for Google Authenticator, QR codes, backup codes (`human_mfa.py`)
+✅ **Key/Credential Reset** — Safe procedures for agent rebuilds or lost second factors with audit logging
 
 ---
 
@@ -786,4 +788,164 @@ totp.verify(code, valid_window=2)  # ±60s instead of ±30s
 - [pyotp documentation](https://pyauth.github.io/pyotp/)
 - [cryptography RSA](https://cryptography.io/en/latest/hazmat/primitives/asymmetric/rsa/)
 - [Redis Pub/Sub model](https://redis.io/docs/interact/pubsub/)
+
+
+---
+
+## Human MFA Management — Second Factor for Operators
+
+`human_mfa.py` provides secure TOTP provisioning and account recovery for humans operating mesh agents.
+
+### Why
+
+Agents communicate with humans (operators, admins) who need to authenticate. Instead of static passwords, use TOTP with backup codes for recovery.
+
+Includes:
+- **QR code generation** for scanning into Google Authenticator, Authy, Microsoft Authenticator, etc.
+- **Backup codes** (10 one-time use codes) for account recovery if authenticator is lost
+- **Rate limiting** after failed TOTP attempts (15-min lockout)
+- **Credential rotation** — safe procedure for rebuilds or lost authenticators (requires admin approval)
+- **Audit logging** — all resets and rotations are logged
+
+### Quick Start
+
+#### 1. Create a human MFA account
+
+```python
+from human_mfa import HumanMFAManager
+
+manager = HumanMFAManager()
+
+# Create account for "rj"
+creds = manager.create_human_account("rj")
+
+print("Backup codes (save in secure location):")
+for code in creds.backup_codes:
+    print(f"  {code}")
+```
+
+#### 2. Generate QR code for Google Authenticator
+
+```python
+# Generate QR code file
+manager.generate_qr_code("rj", output_path="/tmp/rj-mfa-qr.png")
+
+# Or get provisioning URI directly
+uri = manager.get_provisioning_uri("rj")
+print(f"Add to authenticator: {uri}")
+```
+
+#### 3. Verify TOTP during agent operations
+
+```python
+# User provides 6-digit code from their authenticator
+user_code = input("Enter TOTP code: ")
+
+if manager.verify_human_totp("rj", user_code):
+    print("✓ Authenticated")
+else:
+    print("✗ Invalid code (attempt recorded)")
+```
+
+#### 4. Recover lost authenticator
+
+If human loses their authenticator device:
+
+```python
+# Admin initiates reset
+new_uri = manager.generate_new_totp("rj", admin_approval="charlie")
+
+# Human scans new QR code into new authenticator
+print(f"New provisioning URI: {new_uri}")
+```
+
+Or human can recover using backup code:
+
+```python
+backup = input("Enter backup code: ")
+if manager.verify_backup_code("rj", backup):
+    print("✓ Backup code verified")
+    # Proceeds with account recovery flow
+else:
+    print("✗ Invalid backup code")
+```
+
+### API Reference
+
+#### HumanMFAManager
+
+```python
+manager = HumanMFAManager(credential_store_path="~/.a2a/human-credentials")
+```
+
+##### `create_human_account(human_id: str, generate_backup_codes: int = 10) -> HumanCredentials`
+
+Create new human MFA account. Returns credentials with TOTP seed and backup codes.
+
+##### `get_provisioning_uri(human_id: str, issuer: str = "A2A Mesh") -> str`
+
+Get otpauth:// URI for adding to authenticator apps.
+
+##### `generate_qr_code(human_id: str, output_path: Optional[str] = None) -> Optional[bytes]`
+
+Generate QR code image. Returns PNG bytes if `output_path` is None, saves to file otherwise.
+
+##### `verify_human_totp(human_id: str, totp_code: str, window: int = 1) -> bool`
+
+Verify a 6-digit TOTP code. Includes rate limiting (15-min lockout after 5 failures).
+
+##### `verify_backup_code(human_id: str, backup_code: str) -> bool`
+
+Verify and consume a one-time backup code. Returns False if already used.
+
+##### `generate_new_totp(human_id: str, admin_approval: Optional[str] = None) -> str`
+
+Rotate TOTP seed (e.g., after lost authenticator). Requires admin approval. Returns new provisioning URI.
+
+##### `reset_agent_keys(agent_name: str, old_pki: PKIStore, new_pki: PKIStore, requested_by: str, admin_approval: Optional[str] = None) -> bool`
+
+Reset an agent's keypair (rebuild scenario). Logs all resets for audit.
+
+### Storage
+
+Credentials are stored at `~/.a2a/human-credentials/` (or custom path):
+
+```
+~/.a2a/human-credentials/
+├── rj.json                          # Human credentials
+├── alice.json
+└── audit-log/
+    ├── rj.log                       # Credential rotation events
+    ├── alice.log
+    └── key-resets/                  # Agent key reset tracking
+        ├── iris.log
+        └── charlie.log
+```
+
+All files are mode 0o600 (readable only by owner).
+
+### Security Notes
+
+- **TOTP Seed**: 32-character base32 string, stored on disk encrypted by filesystem ACLs
+- **Backup Codes**: 12-character hex codes (48 bits entropy each), one-time use only
+- **Rate Limiting**: 15-minute lockout after 5 failed TOTP attempts
+- **Audit Logging**: All credential resets and key rotations are logged with timestamps and approver
+- **Time Tolerance**: TOTP verification allows ±1 time window (±30 seconds) for clock skew
+
+### Testing
+
+```bash
+pip install -r requirements.txt
+pytest test_human_mfa.py -v
+```
+
+Tests cover:
+- Account creation and persistence
+- TOTP provisioning (URI, QR codes)
+- TOTP verification with time tolerance
+- Backup code consumption
+- Rate limiting
+- Credential rotation
+- Agent key resets
+- Audit logging
 
