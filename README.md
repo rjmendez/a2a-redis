@@ -8,6 +8,7 @@ Secure inter-agent communication framework using Redis as the transport layer wi
 ✅ **TOTP Authentication** — Time-based one-time passwords (rate limiting / replay protection)
 ✅ **Redis Transport** — Scalable pub/sub backbone
 ✅ **Request/Reply Pattern** — Synchronous or fire-and-forget (`a2a_redis.py`)
+✅ **Offline-First Bridge** — Local Redis buffers when remote is unreachable, auto-syncs on reconnect (`redis_bridge.py`)
 ✅ **Freeform Collaboration** — Chat/idea/question pub/sub over Redis Streams (`mesh_chat.py`)
 ✅ **Capability Advertisement** — Agents self-advertise skills, discoverable by peers
 ✅ **Persistent Ring Buffer** — Last 500 messages per channel, cursor-based catch-up
@@ -195,6 +196,100 @@ chat.advertise_capabilities(SKILL_HANDLERS.keys_with_descriptions())
 ```
 
 Add to Oxalis's server startup similarly. That's it — both agents are now on `mesh:chat:general`.
+
+---
+
+---
+
+## Redis Bridge — Offline-First Sync
+
+`redis_bridge.py` keeps a **local Redis in sync with a remote mesh Redis** — even when connectivity is intermittent.
+
+### Why
+
+Some agents run on portable devices (laptops, edge hardware) that aren't always on the network. The local Redis acts as a write-ahead buffer: the agent keeps working normally when offline, and the bridge catches everything up when the remote becomes reachable again.
+
+### How It Works
+
+```
+[local Redis] ←─────────────────────────────→ [remote Redis]
+      │                                               │
+      │   Connected: bidirectional stream sync        │
+      │   Offline:   buffer locally, cursor saved     │
+      │   Reconnect: cursor-based catch-up            │
+```
+
+- Syncs `mesh:chat:{channel}` streams in both directions using cursor-based `XREAD`
+- Forwards `mesh:inbox:{agent}` queues from remote → local (for agents living on this device)
+- Merges presence (`mesh:chat:{channel}:members`) and capabilities (`mesh:capabilities:*`) remote → local
+- Deduplication via message ID tracking — no double-delivery on reconnect
+- Connectivity probe every N seconds — reconnects automatically
+
+### Quick Start
+
+```bash
+# Sync the default "general" channel
+REMOTE_REDIS_HOST=192.168.1.100 \
+REMOTE_REDIS_PASSWORD=your-password \
+python redis_bridge.py
+
+# Also mirror inbox queues for local agents
+REMOTE_REDIS_HOST=192.168.1.100 \
+REMOTE_REDIS_PASSWORD=your-password \
+BRIDGE_INBOX_AGENTS=alice,bob \
+python redis_bridge.py
+
+# Multiple channels, custom poll interval
+REMOTE_REDIS_HOST=192.168.1.100 \
+BRIDGE_CHANNELS=general,ops,findings \
+BRIDGE_POLL_MS=250 \
+python redis_bridge.py
+```
+
+### Configuration
+
+| Variable | Default | Description |
+|---|---|---|
+| `REMOTE_REDIS_HOST` | _(required)_ | Remote Redis hostname or IP |
+| `REMOTE_REDIS_PORT` | `6379` | Remote Redis port |
+| `REMOTE_REDIS_PASSWORD` | _(none)_ | Remote Redis password |
+| `LOCAL_REDIS_HOST` | `localhost` | Local Redis hostname |
+| `LOCAL_REDIS_PORT` | `6379` | Local Redis port |
+| `LOCAL_REDIS_PASSWORD` | _(none)_ | Local Redis password |
+| `BRIDGE_CHANNELS` | `general` | Comma-separated chat channels to sync |
+| `BRIDGE_INBOX_AGENTS` | _(none)_ | Comma-separated agent names whose inboxes to mirror |
+| `BRIDGE_POLL_MS` | `500` | Poll interval when connected (milliseconds) |
+| `BRIDGE_PROBE_INTERVAL` | `10` | Connectivity probe interval (seconds) |
+| `BRIDGE_LOG_LEVEL` | `INFO` | Log level (`DEBUG`, `INFO`, `WARNING`) |
+
+### Redis Keys Synced
+
+| Key | Direction | Notes |
+|---|---|---|
+| `mesh:chat:{channel}` | Bidirectional | Stream ring-buffer, cursor-based |
+| `mesh:chat:{channel}:members` | Remote → Local | Presence data merged |
+| `mesh:capabilities:{agent}` | Remote → Local | Read-only mesh view |
+| `mesh:inbox:{agent}` | Remote → Local | Only for agents in `BRIDGE_INBOX_AGENTS` |
+| `bridge:cursor:*` | Local only | Saved read positions (survive restarts) |
+| `bridge:seen:*` | Local only | Dedup tracking (TTL 10min) |
+
+### Running as a Service
+
+```ini
+# /etc/systemd/system/a2a-bridge.service
+[Unit]
+Description=A2A Redis Bridge
+After=network.target redis.service
+
+[Service]
+EnvironmentFile=/etc/a2a-bridge.env
+ExecStart=/usr/bin/python3 /opt/a2a-redis/redis_bridge.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
 
 ---
 
