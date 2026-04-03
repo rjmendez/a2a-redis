@@ -21,9 +21,6 @@ from typing import Optional, Dict, Tuple
 
 from a2a_redis import A2ARedisClient, A2AMessage
 from human_mfa import HumanMFAManager
-
-
-class AuthScout:
     """Local MFA authentication handler for agents."""
     
     def __init__(self, agent_name: str, redis_host: str = "localhost",
@@ -70,31 +67,51 @@ class AuthScout:
         """
         Start the auth scout listener loop.
         
-        Listens for auth challenges and responds with verification results.
+        Listens for auth challenges from Redis and responds with verification results.
         
         Args:
             timeout_seconds: Poll timeout (use smaller value for responsiveness)
         """
+        import redis
+        
         print(f"[auth-scout] Starting listener for {self.agent_name}/auth")
+        print(f"[auth-scout] Listening on: mesh:inbox:{self.agent_name}/auth")
+        print(f"[auth-scout] TOTP window: {self.window} (±{30*self.window} seconds)")
+        print()
+        
+        redis_client = redis.Redis(
+            host=self.a2a.redis_host,
+            port=self.a2a.redis_port,
+            password=self.a2a.redis_password,
+            decode_responses=True
+        )
+        
+        inbox_key = f"mesh:inbox:{self.agent_name}/auth"
         
         try:
             while True:
-                # Listen for auth requests
-                result = self.a2a.listen(timeout_seconds=timeout_seconds)
+                # Poll for incoming challenges
+                result = redis_client.blpop(inbox_key, timeout=timeout_seconds)
                 
                 if result is None:
                     # Timeout — cleanup stale challenges
                     self._cleanup_stale_challenges()
                     continue
                 
-                msg_id, from_agent, method, params = result
-                
-                if method == "challenge":
-                    self._handle_challenge(from_agent, msg_id, params)
-                elif method == "verify":
-                    self._handle_verify(from_agent, msg_id, params)
-                else:
-                    print(f"[auth-scout] Unknown method: {method}")
+                _, msg_json = result
+                try:
+                    msg = json.loads(msg_json)
+                    action = msg.get("action")
+                    request_id = msg.get("request_id")
+                    
+                    if action == "challenge":
+                        self._handle_challenge(msg.get("from"), request_id, msg)
+                    elif action == "verify":
+                        self._handle_verify(msg.get("from"), request_id, msg)
+                    else:
+                        print(f"[auth-scout] Unknown action: {action}")
+                except json.JSONDecodeError:
+                    print(f"[auth-scout] Failed to parse message")
         
         except KeyboardInterrupt:
             print(f"\n[auth-scout] Shutting down")
@@ -158,6 +175,15 @@ class AuthScout:
             msg_id: Message ID for reply
             params: Challenge parameters (human_id, request_id, etc.)
         """
+        import redis
+        
+        redis_client = redis.Redis(
+            host=self.a2a.redis_host,
+            port=self.a2a.redis_port,
+            password=self.a2a.redis_password,
+            decode_responses=True
+        )
+        
         human_id = params.get("human_id")
         request_id = params.get("request_id")
         
@@ -166,24 +192,24 @@ class AuthScout:
         # Check if human has MFA enabled
         creds = self.mfa_manager._load_credentials(human_id)
         if not creds or not creds.mfa_enabled:
-            self.a2a.send(
-                to_agent=from_agent,
-                method="challenge_response",
-                params={"request_id": request_id, "error": "MFA not enabled"},
-                wait_for_reply=False
-            )
+            response = {
+                "request_id": request_id,
+                "from": f"{self.agent_name}/auth",
+                "error": "MFA not enabled"
+            }
+            redis_client.lpush(f"mesh:inbox:{from_agent}", json.dumps(response))
             return
         
         # Store challenge
         self.pending_challenges[request_id] = (human_id, time.time())
         
         # Send back challenge token
-        self.a2a.send(
-            to_agent=from_agent,
-            method="challenge_response",
-            params={"request_id": request_id, "status": "waiting_code"},
-            wait_for_reply=False
-        )
+        response = {
+            "request_id": request_id,
+            "from": f"{self.agent_name}/auth",
+            "status": "waiting_code"
+        }
+        redis_client.lpush(f"mesh:inbox:{from_agent}", json.dumps(response))
     
     def _handle_verify(self, from_agent: str, msg_id: str, params: Dict) -> None:
         """
@@ -194,17 +220,26 @@ class AuthScout:
             msg_id: Message ID for reply
             params: Verification parameters (request_id, human_id, code)
         """
+        import redis
+        
+        redis_client = redis.Redis(
+            host=self.a2a.redis_host,
+            port=self.a2a.redis_port,
+            password=self.a2a.redis_password,
+            decode_responses=True
+        )
+        
         request_id = params.get("request_id")
         human_id = params.get("human_id")
         code = params.get("code")
         
         if request_id not in self.pending_challenges:
-            self.a2a.send(
-                to_agent=from_agent,
-                method="verify_response",
-                params={"request_id": request_id, "error": "Challenge expired"},
-                wait_for_reply=False
-            )
+            response = {
+                "request_id": request_id,
+                "from": f"{self.agent_name}/auth",
+                "error": "Challenge expired"
+            }
+            redis_client.lpush(f"mesh:inbox:{from_agent}", json.dumps(response))
             return
         
         # Verify TOTP code
@@ -214,32 +249,26 @@ class AuthScout:
             
             print(f"[auth-scout] ✓ Verified {human_id} (req={request_id})")
             
-            self.a2a.send(
-                to_agent=from_agent,
-                method="verify_response",
-                params={
-                    "request_id": request_id,
-                    "authenticated": True,
-                    "auth_token": auth_token,
-                    "expires_in": 3600  # 1 hour
-                },
-                wait_for_reply=False
-            )
+            response = {
+                "request_id": request_id,
+                "from": f"{self.agent_name}/auth",
+                "authenticated": True,
+                "auth_token": auth_token,
+                "expires_in": 3600
+            }
+            redis_client.lpush(f"mesh:inbox:{from_agent}", json.dumps(response))
             
             self.pending_challenges.pop(request_id, None)
         else:
             print(f"[auth-scout] ✗ Failed verification for {human_id}")
             
-            self.a2a.send(
-                to_agent=from_agent,
-                method="verify_response",
-                params={
-                    "request_id": request_id,
-                    "authenticated": False,
-                    "error": "Invalid code"
-                },
-                wait_for_reply=False
-            )
+            response = {
+                "request_id": request_id,
+                "from": f"{self.agent_name}/auth",
+                "authenticated": False,
+                "error": "Invalid code"
+            }
+            redis_client.lpush(f"mesh:inbox:{from_agent}", json.dumps(response))
     
     def _check_verification(self, request_id: str, human_id: str) -> bool:
         """Check if verification came back for a request."""
