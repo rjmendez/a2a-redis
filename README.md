@@ -949,3 +949,135 @@ Tests cover:
 - Agent key resets
 - Audit logging
 
+
+---
+
+## Auth Scout — Local MFA Handler
+
+`auth_scout.py` runs as a persistent local scout that handles human MFA challenges with **zero network latency**.
+
+### Why
+
+Network roundtrips add 100-500ms per TOTP verification. With Auth Scout running locally on the agent's machine:
+- Challenge issued & verified entirely locally
+- No network delay
+- TOTP window can stay tight (±30s) without UX pain
+- Ideal for secure operations that require frequent re-auth
+
+### How It Works
+
+```
+User                    Agent                   Auth Scout (local)
+ |                       |                            |
+ |--- sensitive op ------>|                            |
+ |                       |--- request challenge ------>|
+ |                       |<--- challenge token --------|
+ |                       |                            |
+ |-- enters code + req_id |                            |
+ |-- (to agent CLI/API) -->|--- verify code ---------->|
+ |                        |<--- auth_token (verified)--|
+ |                       |                            |
+ |<-- operation result ----|                            |
+```
+
+### Quick Start
+
+#### 1. Start Auth Scout (background service)
+
+```bash
+# Terminal 1: Start scout
+python auth_scout.py mrpink
+
+# Output:
+# [auth-scout] Starting listener for mrpink/auth
+# [auth-scout] Waiting for challenges...
+```
+
+#### 2. Agent requests authentication
+
+```python
+from auth_scout_example import authenticate_human_with_auth_scout
+
+# In your agent code
+if authenticate_human_with_auth_scout("mrpink", "RJMendez"):
+    print("✓ Authenticated, proceeding with sensitive operation")
+    # Access confidential data, execute privileged commands, etc.
+else:
+    print("✗ Authentication failed, denying operation")
+```
+
+#### 3. Human receives challenge
+
+```
+[auth-scout] Challenge from mrpink for RJMendez
+[auth-scout] Requesting TOTP code (expires in 120s)
+
+Enter your 6-digit code: 607098
+```
+
+#### 4. Scout verifies & agent proceeds
+
+```
+[auth-scout] ✓ Verified RJMendez
+[mrpink] ✓ RJMendez authenticated
+[mrpink] Proceeding with sensitive operation...
+```
+
+### Configuration
+
+```python
+scout = AuthScout(
+    agent_name="mrpink",
+    redis_host="localhost",
+    redis_port=6379,
+    redis_password="",
+    window=3,  # ±90 seconds (configurable)
+    human_mfa_store="~/.a2a/human-credentials"
+)
+```
+
+| Parameter | Default | Notes |
+|-----------|---------|-------|
+| `agent_name` | — | Parent agent name |
+| `redis_host` | `localhost` | Redis host |
+| `redis_port` | `6379` | Redis port |
+| `redis_password` | `""` | Redis password |
+| `window` | `3` | TOTP time window (1=±30s, 2=±60s, 3=±90s) |
+| `human_mfa_store` | `~/.a2a/human-credentials` | Path to human credentials |
+
+### Performance
+
+| Scenario | Latency | Notes |
+|----------|---------|-------|
+| Network-based TOTP | 200-500ms | Roundtrip over network |
+| Auth Scout (local) | <50ms | Local process, no network |
+| **Speedup** | **4-10x** | Minimal latency, tight TOTP window possible |
+
+### Use Cases
+
+1. **Sensitive Operations** — Require MFA before accessing secrets, modifying configs
+2. **Privileged Commands** — Authenticate before executing high-impact commands
+3. **Audit Logging** — Log all authenticated operations with human identity
+4. **Rate Limiting** — Allow higher rates after successful MFA
+5. **Session Management** — Issue time-limited auth tokens after verification
+
+### Architecture
+
+Auth Scout is a **scout**, meaning:
+- Runs on the agent's local machine (not a remote service)
+- Inherits agent identity for mesh communication
+- Can be started/stopped independently
+- Logs to agent's local monitoring
+
+### Testing
+
+See `auth_scout_example.py` for usage examples:
+
+```bash
+# Start scout service
+python auth_scout_example.py mrpink
+
+# In another terminal, test authentication
+python auth_scout_example.py mrpink RJMendez
+```
+
