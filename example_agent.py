@@ -141,7 +141,7 @@ if __name__ == "__main__":
     pki_path = os.environ.get("PKI_PATH", "./agent-keys")
 
     # Per-peer TOTP seeds from environment (comma-separated key=value pairs)
-    # Example: TOTP_SEEDS="alice=JBSWY3DPEHPK3PXP,bob=32EE5VTB5CL7BLJID4IBFZCXJMQKDH2W"
+    # Example: TOTP_SEEDS="alice=JBSWY3DPEHPK3PXP,bob=YOUR_TOTP_SEED_HERE"
     totp_seeds = {}
     seeds_env = os.environ.get("TOTP_SEEDS", "")
     if seeds_env:

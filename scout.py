@@ -15,12 +15,12 @@ Design goals:
 
 Scout identity model:
 
-    host agent (has keypair: mrpink)
-    └── scout (signs as "mrpink/osint-crawler", using mrpink's private key)
+    host agent (has keypair: alice)
+    └── scout (signs as "alice/osint-crawler", using alice's private key)
 
 Scouts are always attributable to their host. The mesh sees provenance clearly:
-  from: "mrpink/osint-crawler"   — long-running OSINT crawler owned by mrpink
-  from: "mrpink/snapshot-42a1"   — ephemeral snapshot, auto-ID
+  from: "alice/osint-crawler"   — long-running OSINT crawler owned by alice
+  from: "alice/snapshot-42a1"   — ephemeral snapshot, auto-ID
 
 Message kinds (extends mesh_chat.py kinds):
 
@@ -55,7 +55,7 @@ Usage — ephemeral scout (one-shot):
 
     pki = PKIStore("./agent-keys")
 
-    with ScoutClient.ephemeral("mrpink", pki=pki) as scout:
+    with ScoutClient.ephemeral("alice", pki=pki) as scout:
         # do work...
         scout.finding(
             title="Exposed API key in public repo",
@@ -72,7 +72,7 @@ Usage — persistent scout:
 
     pki = PKIStore("./agent-keys")
     scout = ScoutClient(
-        host_agent="mrpink",
+        host_agent="alice",
         scout_id="osint-crawler",
         pki=pki,
         redis_host="localhost",
@@ -95,7 +95,7 @@ Host relay usage:
     from scout import HostRelay
 
     relay = HostRelay(
-        host_agent="mrpink",
+        host_agent="alice",
         local_redis=local_r,
         mesh_redis=mesh_r,
         pki=pki,
@@ -446,7 +446,7 @@ class ScoutClient:
         Create an ephemeral (one-shot) scout.
         Best used as a context manager:
 
-            with ScoutClient.ephemeral("mrpink", pki=pki) as scout:
+            with ScoutClient.ephemeral("alice", pki=pki) as scout:
                 scout.finding("Found exposed key", severity="high", evidence={...})
         """
         return cls(host_agent=host_agent, scout_id=scout_id, ephemeral=True, **kwargs)
@@ -625,10 +625,10 @@ def _cli():
     Minimal CLI for manual scout testing.
 
     Usage:
-        python scout.py --host mrpink --id osint-crawler --redis-host localhost finding \\
+        python scout.py --host alice --id osint-crawler --redis-host localhost finding \\
             --title "Exposed key" --severity high
 
-        python scout.py --host mrpink --id crawler list-scouts
+        python scout.py --host alice --id crawler list-scouts
     """
     import argparse
 

@@ -21,7 +21,7 @@ Redis keys used:
 Message envelope (stored in stream):
   {
     "id":        "<uuid>",
-    "from":      "charlie",
+    "from":      "alice",
     "channel":   "general",
     "ts":        "2026-04-03T17:00:00Z",
     "text":      "...",        # freeform content
@@ -36,12 +36,12 @@ Usage (quick start):
     from a2a_redis import PKIStore
 
     pki = PKIStore("./agent-keys")
-    chat = MeshChatClient("charlie", redis_host="audit-redis", redis_password="...",
-                          totp_seeds={"oxalis": "32EE5VTB5CL7BLJID4IBFZCXJMQKDH2W"},
+    chat = MeshChatClient("alice", redis_host="redis-host", redis_password="...",
+                          totp_seeds={"bob": "YOUR_TOTP_SEED_HERE"},
                           pki=pki)
 
     # Publish a freeform idea
-    chat.say("Hey Oxalis — what if we ran the DistilBERT batch_classify on GPU directly?")
+    chat.say("Hey Bob — what if we ran the DistilBERT batch_classify on GPU directly?")
 
     # Publish a structured update
     chat.update("Pipeline recovered: 9/9 workers healthy after health.py fix")
@@ -534,8 +534,8 @@ class MeshChatMixin:
         class MyAgent(A2ARedisClient, MeshChatMixin):
             pass
 
-        agent = MyAgent("charlie", ...)
-        agent.chat_say("hey Oxalis, ideas on wordgen pipeline?")
+        agent = MyAgent("alice", ...)
+        agent.chat_say("hey Bob, ideas on wordgen pipeline?")
     """
 
     @property
@@ -573,12 +573,12 @@ def _cli():
     Minimal CLI for manual testing / ad-hoc agent chat.
 
     Usage:
-        python mesh_chat.py --agent charlie --host audit-redis --password <pw> --channel general
-        python mesh_chat.py --agent charlie ... read          # read new messages
-        python mesh_chat.py --agent charlie ... history       # dump last 50
-        python mesh_chat.py --agent charlie ... say "hello"  # send a message
-        python mesh_chat.py --agent charlie ... capabilities  # show all agent caps
-        python mesh_chat.py --agent charlie ... listen        # blocking listen loop
+        python mesh_chat.py --agent alice --host redis-host --password <pw> --channel general
+        python mesh_chat.py --agent alice ... read          # read new messages
+        python mesh_chat.py --agent alice ... history       # dump last 50
+        python mesh_chat.py --agent alice ... say "hello"  # send a message
+        python mesh_chat.py --agent alice ... capabilities  # show all agent caps
+        python mesh_chat.py --agent alice ... listen        # blocking listen loop
     """
     import argparse, sys
 

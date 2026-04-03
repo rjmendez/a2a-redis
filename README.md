@@ -34,7 +34,7 @@ But two agents working on the same problem need to be able to say:
 
 That's what `MeshChatClient` is for.
 
-### Quick Start (Charlie side)
+### Quick Start (Alice side)
 
 ```python
 from mesh_chat import MeshChatClient
@@ -42,10 +42,10 @@ from a2a_redis import PKIStore
 
 pki = PKIStore("./agent-keys")
 chat = MeshChatClient(
-    agent_name="charlie",
-    redis_host="audit-redis",
-    redis_password="-pyGzOHVtcESCnHb3NkMEWwMbc5i47On ",
-    totp_seeds={"__default__": "32EE5VTB5CL7BLJID4IBFZCXJMQKDH2W"},
+    agent_name="alice",
+    redis_host="redis-host",
+    redis_password="your-redis-password ",
+    totp_seeds={"__default__": "YOUR_TOTP_SEED_HERE"},
     pki=pki,
 )
 
@@ -64,7 +64,7 @@ chat.ask("Do you have hashcat_crack ready on the RTX? I want to wire it into chu
 # Publish a status update
 chat.update("Chunk scanner: 327 chunks/hr, 107,840 pending, ~15 days ETA")
 
-# Advertise skills so Oxalis knows what I can do
+# Advertise skills so Bob knows what I can do
 chat.advertise_capabilities({
     "pipeline_status":   "Real-time audit pipeline health, worker counts",
     "findings_query":    "Search scan_secrets DB — 25,512 secrets",
@@ -74,21 +74,21 @@ chat.advertise_capabilities({
 })
 ```
 
-### Quick Start (Oxalis side)
+### Quick Start (Bob side)
 
-Oxalis should use the **same** Redis instance (`audit-redis`) that Charlie uses.
+Bob should use the **same** Redis instance (`redis-host`) that Alice uses.
 The channel is `mesh:chat:general` (default).
 
 ```python
 from mesh_chat import MeshChatClient
 from a2a_redis import PKIStore
 
-pki = PKIStore("./agent-keys")  # must have charlie.public.pem for sig verification
+pki = PKIStore("./agent-keys")  # must have sender.public.pem for sig verification
 chat = MeshChatClient(
-    agent_name="oxalis",
-    redis_host="audit-redis",          # same Redis as Charlie
-    redis_password="-pyGzOHVtcESCnHb3NkMEWwMbc5i47On ",
-    totp_seeds={"__default__": "32EE5VTB5CL7BLJID4IBFZCXJMQKDH2W"},
+    agent_name="bob",
+    redis_host="redis-host",          # same Redis as Alice
+    redis_password="your-redis-password ",
+    totp_seeds={"__default__": "YOUR_TOTP_SEED_HERE"},
     pki=pki,
 )
 
@@ -102,7 +102,7 @@ chat.advertise_capabilities({
     "litellm_manage":    "LiteLLM proxy pool routing and spend tracking",
 })
 
-# Read messages from Charlie
+# Read messages from Alice
 for msg in chat.read_new():
     print(msg)
     # msg.kind tells you what kind: "chat", "idea", "question", "update", etc.
@@ -154,25 +154,25 @@ print("Online:", chat.online_agents())
 
 ```bash
 # Read new messages
-python mesh_chat.py --agent charlie --host audit-redis --password "..." read
+python mesh_chat.py --agent alice --host redis-host --password "..." read
 
 # Send a message
-python mesh_chat.py --agent charlie ... say "hey Oxalis, what's GPU load?"
+python mesh_chat.py --agent alice ... say "hey Bob, what's GPU load?"
 
 # Ask a question
-python mesh_chat.py --agent charlie ... ask "wordgen ready to wire into crawl pipeline?"
+python mesh_chat.py --agent alice ... ask "wordgen ready to wire into crawl pipeline?"
 
 # Dump full channel history
-python mesh_chat.py --agent charlie ... history
+python mesh_chat.py --agent alice ... history
 
 # Show all advertised capabilities
-python mesh_chat.py --agent charlie ... capabilities
+python mesh_chat.py --agent alice ... capabilities
 
 # Who's active
-python mesh_chat.py --agent charlie ... members
+python mesh_chat.py --agent alice ... members
 
 # Blocking listen
-python mesh_chat.py --agent charlie ... listen
+python mesh_chat.py --agent alice ... listen
 ```
 
 ### Redis Keys
@@ -186,17 +186,17 @@ python mesh_chat.py --agent charlie ... listen
 
 ### Integration with Existing A2A Servers
 
-Add to Charlie's `charlie_server.py` startup:
+Add to your agent startup:
 
 ```python
 # In _start_queue_worker() or on_startup
 from mesh_chat import MeshChatClient
-chat = MeshChatClient("charlie", redis_host=REDIS_HOST, redis_password=REDIS_PASSWORD, pki=pki)
+chat = MeshChatClient("alice", redis_host=REDIS_HOST, redis_password=REDIS_PASSWORD, pki=pki)
 chat.join()
 chat.advertise_capabilities(SKILL_HANDLERS.keys_with_descriptions())
 ```
 
-Add to Oxalis's server startup similarly. That's it — both agents are now on `mesh:chat:general`.
+Add to Bob's server startup similarly. That's it — both agents are now on `mesh:chat:general`.
 
 ---
 
@@ -301,13 +301,13 @@ WantedBy=multi-user.target
 ### Identity Model
 
 ```
-mrpink (has keypair)
-├── mrpink/osint-crawler      persistent, long-running
-├── mrpink/github-watcher     persistent, long-running
-└── mrpink/snapshot-42a1f3    ephemeral, one-shot
+alice (has keypair)
+├── alice/osint-crawler      persistent, long-running
+├── alice/github-watcher     persistent, long-running
+└── alice/snapshot-42a1f3    ephemeral, one-shot
 ```
 
-Scouts sign messages using the host's private key. The mesh sees full provenance (`from: "mrpink/osint-crawler"`) with no extra key management overhead.
+Scouts sign messages using the host's private key. The mesh sees full provenance (`from: "alice/osint-crawler"`) with no extra key management overhead.
 
 ### Message Kinds
 
@@ -330,7 +330,7 @@ from a2a_redis import PKIStore
 
 pki = PKIStore("./agent-keys")
 
-with ScoutClient.ephemeral("mrpink", pki=pki, redis_host="localhost") as scout:
+with ScoutClient.ephemeral("alice", pki=pki, redis_host="localhost") as scout:
     # join() sent automatically on enter
     scout.task_start("Scanning 50 targets")
     for target in targets:
@@ -349,7 +349,7 @@ with ScoutClient.ephemeral("mrpink", pki=pki, redis_host="localhost") as scout:
 
 ```python
 scout = ScoutClient(
-    host_agent="mrpink",
+    host_agent="alice",
     scout_id="osint-crawler",       # stable ID for cursor persistence
     pki=pki,
     redis_host="localhost",
@@ -385,7 +385,7 @@ The host agent controls what scout output reaches the shared mesh. Local noisy o
 from scout import HostRelay
 
 relay = HostRelay(
-    host_agent="mrpink",
+    host_agent="alice",
     local_redis=local_r,    # your local Redis
     mesh_redis=mesh_r,      # shared mesh Redis
     pki=pki,
@@ -407,18 +407,18 @@ print(relay.stats())  # {"relayed": 12, "filtered": 47}
 
 ```bash
 # One-shot finding
-python scout.py --host mrpink --id crawl-1 --ephemeral finding \
+python scout.py --host alice --id crawl-1 --ephemeral finding \
     --title "Exposed API key" --severity high --evidence '{"repo":"example/repo"}'
 
 # Heartbeat from persistent scout
-python scout.py --host mrpink --id osint-crawler heartbeat "3,200 targets processed"
+python scout.py --host alice --id osint-crawler heartbeat "3,200 targets processed"
 
 # List all registered scouts
-python scout.py --host mrpink list-scouts
+python scout.py --host alice list-scouts
 
 # Scout state
-python scout.py --host mrpink --id osint-crawler state-set "last_url=https://example.com"
-python scout.py --host mrpink --id osint-crawler state-get last_url
+python scout.py --host alice --id osint-crawler state-set "last_url=https://example.com"
+python scout.py --host alice --id osint-crawler state-get last_url
 ```
 
 ---
@@ -456,7 +456,7 @@ alice = A2ARedisClient(
     redis_host="localhost",
     redis_port=6379,
     redis_password=None,
-    totp_seed="32EE5VTB5CL7BLJID4IBFZCXJMQKDH2W",
+    totp_seed="YOUR_TOTP_SEED_HERE",
     pki=pki
 )
 
@@ -465,7 +465,7 @@ bob = A2ARedisClient(
     redis_host="localhost",
     redis_port=6379,
     redis_password=None,
-    totp_seed="32EE5VTB5CL7BLJID4IBFZCXJMQKDH2W",
+    totp_seed="YOUR_TOTP_SEED_HERE",
     pki=pki
 )
 ```
@@ -623,7 +623,7 @@ agent-alice:
     - REDIS_HOST=redis
     - REDIS_PORT=6379
     - REDIS_PASSWORD=your-password
-    - TOTP_SEED=32EE5VTB5CL7BLJID4IBFZCXJMQKDH2W
+    - TOTP_SEED=YOUR_TOTP_SEED_HERE
     - PKI_PATH=/etc/agent-keys
   volumes:
     - ./agent-keys:/etc/agent-keys:ro
@@ -714,7 +714,7 @@ while True:
 
 **Request Broadcasting:**
 ```python
-agents = ["alice", "bob", "charlie"]
+agents = ["alice", "bob", "alice"]
 for agent in agents:
     client.send(agent, "status_check", {}, wait_for_reply=False)
 ```
