@@ -1,0 +1,55 @@
+version: "3.8"
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: redis-server --requirepass "redis-password-change-me"
+    networks:
+      - a2a-mesh
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "redis-password-change-me", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+  worker-alice:
+    build: .
+    environment:
+      - AGENT_NAME=alice
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=redis-password-change-me
+      - TOTP_SEED=32EE5VTB5CL7BLJID4IBFZCXJMQKDH2W
+      - PKI_PATH=/etc/agent-keys
+    volumes:
+      - ./agent-keys:/etc/agent-keys:ro
+    networks:
+      - a2a-mesh
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: python3 example_agent.py
+
+  worker-bob:
+    build: .
+    environment:
+      - AGENT_NAME=bob
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=redis-password-change-me
+      - TOTP_SEED=JBSWY3DPEBLW64TMMQ======
+      - PKI_PATH=/etc/agent-keys
+    volumes:
+      - ./agent-keys:/etc/agent-keys:ro
+    networks:
+      - a2a-mesh
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: python3 example_agent.py
+
+networks:
+  a2a-mesh:
+    driver: bridge
