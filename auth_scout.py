@@ -21,6 +21,9 @@ from typing import Optional, Dict, Tuple
 
 from a2a_redis import A2ARedisClient, A2AMessage
 from human_mfa import HumanMFAManager
+
+
+class AuthScout:
     """Local MFA authentication handler for agents."""
     
     def __init__(self, agent_name: str, redis_host: str = "localhost",
@@ -44,6 +47,9 @@ from human_mfa import HumanMFAManager
         """
         self.agent_name = agent_name
         self.window = window
+        self.redis_host = redis_host
+        self.redis_port = redis_port
+        self.redis_password = redis_password
         self.mfa_manager = HumanMFAManager(credential_store_path=human_mfa_store)
         
         # A2A client for mesh communication
@@ -80,9 +86,9 @@ from human_mfa import HumanMFAManager
         print()
         
         redis_client = redis.Redis(
-            host=self.a2a.redis_host,
-            port=self.a2a.redis_port,
-            password=self.a2a.redis_password,
+            host=self.redis_host,
+            port=self.redis_port,
+            password=self.redis_password,
             decode_responses=True
         )
         
@@ -178,9 +184,9 @@ from human_mfa import HumanMFAManager
         import redis
         
         redis_client = redis.Redis(
-            host=self.a2a.redis_host,
-            port=self.a2a.redis_port,
-            password=self.a2a.redis_password,
+            host=self.redis_host,
+            port=self.redis_port,
+            password=self.redis_password,
             decode_responses=True
         )
         
@@ -223,9 +229,9 @@ from human_mfa import HumanMFAManager
         import redis
         
         redis_client = redis.Redis(
-            host=self.a2a.redis_host,
-            port=self.a2a.redis_port,
-            password=self.a2a.redis_password,
+            host=self.redis_host,
+            port=self.redis_port,
+            password=self.redis_password,
             decode_responses=True
         )
         
