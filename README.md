@@ -9,6 +9,7 @@ Secure inter-agent communication framework using Redis as the transport layer wi
 ✅ **Redis Transport** — Scalable pub/sub backbone
 ✅ **Request/Reply Pattern** — Synchronous or fire-and-forget (`a2a_redis.py`)
 ✅ **Offline-First Bridge** — Local Redis buffers when remote is unreachable, auto-syncs on reconnect (`redis_bridge.py`)
+✅ **Scout Layer** — Sub-agents inherit host identity; ephemeral and persistent scouts, structured findings, host relay filtering (`scout.py`)
 ✅ **Freeform Collaboration** — Chat/idea/question pub/sub over Redis Streams (`mesh_chat.py`)
 ✅ **Capability Advertisement** — Agents self-advertise skills, discoverable by peers
 ✅ **Persistent Ring Buffer** — Last 500 messages per channel, cursor-based catch-up
@@ -289,6 +290,135 @@ RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
+```
+
+---
+
+## Scout Layer — Sub-Agent Identity & Structured Output
+
+`scout.py` lets task-specific sub-processes (scouts) participate in the mesh under their host agent's identity, without managing their own keypairs.
+
+### Identity Model
+
+```
+mrpink (has keypair)
+├── mrpink/osint-crawler      persistent, long-running
+├── mrpink/github-watcher     persistent, long-running
+└── mrpink/snapshot-42a1f3    ephemeral, one-shot
+```
+
+Scouts sign messages using the host's private key. The mesh sees full provenance (`from: "mrpink/osint-crawler"`) with no extra key management overhead.
+
+### Message Kinds
+
+Scouts extend the mesh_chat kinds with:
+
+| kind | use when |
+|---|---|
+| `finding` | Structured result with severity + evidence dict |
+| `snapshot` | Point-in-time data capture |
+| `heartbeat` | Periodic liveness signal (persistent scouts) |
+| `error` | Scout-reported failure or exception |
+| `task_start` | Scout beginning a task |
+| `task_done` | Task complete, with summary stats |
+
+### Ephemeral Scout (one-shot)
+
+```python
+from scout import ScoutClient
+from a2a_redis import PKIStore
+
+pki = PKIStore("./agent-keys")
+
+with ScoutClient.ephemeral("mrpink", pki=pki, redis_host="localhost") as scout:
+    # join() sent automatically on enter
+    scout.task_start("Scanning 50 targets")
+    for target in targets:
+        result = scan(target)
+        if result.found:
+            scout.finding(
+                title=result.title,
+                severity=result.severity,       # info/low/medium/high/critical
+                evidence={"url": result.url, "detail": result.detail},
+            )
+    scout.task_done("Scan complete", stats={"checked": 50, "findings": 3})
+    # leave() sent automatically on exit
+```
+
+### Persistent Scout
+
+```python
+scout = ScoutClient(
+    host_agent="mrpink",
+    scout_id="osint-crawler",       # stable ID for cursor persistence
+    pki=pki,
+    redis_host="localhost",
+)
+scout.join()
+scout.advertise_capabilities(...)   # uses MeshChatClient under the hood
+
+while running:
+    scout.heartbeat(f"Processed {n} targets so far")
+    results = do_work()
+    for r in results:
+        scout.finding(r.title, r.severity, r.evidence)
+
+scout.leave()
+```
+
+### Scout State (persistent scouts)
+
+```python
+# Persist crawl position across restarts
+scout.set_state("last_url", "https://example.com/page/42")
+scout.set_state("items_processed", "1500")
+
+# On restart: resume from saved position
+last_url = scout.get_state("last_url")
+```
+
+### Host Relay
+
+The host agent controls what scout output reaches the shared mesh. Local noisy output stays local; only curated signal is forwarded.
+
+```python
+from scout import HostRelay
+
+relay = HostRelay(
+    host_agent="mrpink",
+    local_redis=local_r,    # your local Redis
+    mesh_redis=mesh_r,      # shared mesh Redis
+    pki=pki,
+)
+
+# Forward only high/critical findings to shared "findings" channel
+relay.relay_findings(min_severity="high", dst_channel="findings")
+
+# Forward task lifecycle + errors to shared "ops" channel
+relay.relay_updates(dst_channel="ops")
+
+# Forward everything (debug / trusted private mesh)
+relay.relay_all()
+
+print(relay.stats())  # {"relayed": 12, "filtered": 47}
+```
+
+### CLI
+
+```bash
+# One-shot finding
+python scout.py --host mrpink --id crawl-1 --ephemeral finding \
+    --title "Exposed API key" --severity high --evidence '{"repo":"example/repo"}'
+
+# Heartbeat from persistent scout
+python scout.py --host mrpink --id osint-crawler heartbeat "3,200 targets processed"
+
+# List all registered scouts
+python scout.py --host mrpink list-scouts
+
+# Scout state
+python scout.py --host mrpink --id osint-crawler state-set "last_url=https://example.com"
+python scout.py --host mrpink --id osint-crawler state-get last_url
 ```
 
 ---
