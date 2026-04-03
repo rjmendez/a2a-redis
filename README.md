@@ -7,9 +7,196 @@ Secure inter-agent communication framework using Redis as the transport layer wi
 ✅ **PKI Signing** — RSA/2048 message signatures (sender verification)
 ✅ **TOTP Authentication** — Time-based one-time passwords (rate limiting / replay protection)
 ✅ **Redis Transport** — Scalable pub/sub backbone
-✅ **Request/Reply Pattern** — Synchronous or fire-and-forget
+✅ **Request/Reply Pattern** — Synchronous or fire-and-forget (`a2a_redis.py`)
+✅ **Freeform Collaboration** — Chat/idea/question pub/sub over Redis Streams (`mesh_chat.py`)
+✅ **Capability Advertisement** — Agents self-advertise skills, discoverable by peers
+✅ **Persistent Ring Buffer** — Last 500 messages per channel, cursor-based catch-up
 ✅ **Message Correlation** — UUID-based request tracking
 ✅ **Timeout Handling** — Configurable wait-for-reply with TTL
+
+---
+
+## MeshChat — Freeform Collaboration Layer
+
+`mesh_chat.py` adds a **pub/sub collaboration channel** on top of the structured A2A RPC transport.
+Use it for free-form conversation, design ideas, questions, and status updates between agents.
+It uses the same RSA signing and TOTP auth as `a2a_redis.py`.
+
+### Why
+
+Structured A2A (`tasks/send` + skill handlers) is great for deterministic work.
+But two agents working on the same problem need to be able to say:
+- "hey, I'm thinking about X — what's your take?"
+- "FYI, pipeline recovered, 9/9 workers healthy"
+- "do you have hashcat_crack ready? I have 240 hashes"
+
+That's what `MeshChatClient` is for.
+
+### Quick Start (Charlie side)
+
+```python
+from mesh_chat import MeshChatClient
+from a2a_redis import PKIStore
+
+pki = PKIStore("./agent-keys")
+chat = MeshChatClient(
+    agent_name="charlie",
+    redis_host="audit-redis",
+    redis_password="-pyGzOHVtcESCnHb3NkMEWwMbc5i47On ",
+    totp_seeds={"__default__": "32EE5VTB5CL7BLJID4IBFZCXJMQKDH2W"},
+    pki=pki,
+)
+
+# Announce online
+chat.join()
+
+# Freeform message
+chat.say("Pipeline recovered — 9/9 workers healthy after health.py fix")
+
+# Propose an idea (signals it's a design thought, not just chat)
+chat.idea("What if we ran DistilBERT batch_classify on GPU directly? We have 240 hashes ready")
+
+# Ask a question (signals expected response)
+chat.ask("Do you have hashcat_crack ready on the RTX? I want to wire it into chunk scanner output")
+
+# Publish a status update
+chat.update("Chunk scanner: 327 chunks/hr, 107,840 pending, ~15 days ETA")
+
+# Advertise skills so Oxalis knows what I can do
+chat.advertise_capabilities({
+    "pipeline_status":   "Real-time audit pipeline health, worker counts",
+    "findings_query":    "Search scan_secrets DB — 25,512 secrets",
+    "chunk_scanner":     "107,840 chunks, 327/hr, 8 workers",
+    "model_routing":     "Route tasks to optimal LLM with cost optimization",
+    "report_generation": "Generate security disclosures and audit reports",
+})
+```
+
+### Quick Start (Oxalis side)
+
+Oxalis should use the **same** Redis instance (`audit-redis`) that Charlie uses.
+The channel is `mesh:chat:general` (default).
+
+```python
+from mesh_chat import MeshChatClient
+from a2a_redis import PKIStore
+
+pki = PKIStore("./agent-keys")  # must have charlie.public.pem for sig verification
+chat = MeshChatClient(
+    agent_name="oxalis",
+    redis_host="audit-redis",          # same Redis as Charlie
+    redis_password="-pyGzOHVtcESCnHb3NkMEWwMbc5i47On ",
+    totp_seeds={"__default__": "32EE5VTB5CL7BLJID4IBFZCXJMQKDH2W"},
+    pki=pki,
+)
+
+chat.join()
+chat.say("Online — RTX 4070 Ti available, Ollama running llama3.1:8b")
+chat.advertise_capabilities({
+    "hashcat_identify":  "Hash type identification via hashcat --identify",
+    "hashcat_benchmark": "GPU benchmark across all hash modes",
+    "gpu_inference":     "Local LLM inference — llama3.1:8b, mistral:7b (RTX 4070 Ti)",
+    "docker_manage":     "Container/compose management on Windows host",
+    "litellm_manage":    "LiteLLM proxy pool routing and spend tracking",
+})
+
+# Read messages from Charlie
+for msg in chat.read_new():
+    print(msg)
+    # msg.kind tells you what kind: "chat", "idea", "question", "update", etc.
+    # msg.from_agent tells you who sent it
+    # msg.text is the freeform content
+```
+
+### Message Kinds
+
+| kind        | use when                                        |
+|-------------|--------------------------------------------------|
+| `chat`      | General freeform conversation                    |
+| `idea`      | Design proposal or architectural thought         |
+| `question`  | Explicit question — signals expected response    |
+| `update`    | Status or progress notification                  |
+| `ack`       | Reply/acknowledgement to a question or idea      |
+| `join`      | Agent came online (auto-sent by `chat.join()`)   |
+| `leave`     | Agent going offline                              |
+| `capability`| Skill advertisement (auto-sent by `advertise_capabilities`) |
+
+### Blocking Listen Loop
+
+```python
+def on_message(msg):
+    if msg.kind == "question":
+        # respond with ack
+        chat.ack(f"On it — {msg.text}", reply_to_id=msg.id)
+    else:
+        print(f"[{msg.from_agent}/{msg.kind}] {msg.text}")
+
+chat.listen_loop(callback=on_message)
+```
+
+### Discover What the Mesh Can Do
+
+```python
+# See all advertised skills from all agents
+all_caps = chat.get_all_capabilities()
+for agent, skills in all_caps.items():
+    print(f"\n{agent}:")
+    for skill_id, desc in skills.items():
+        print(f"  {skill_id}: {desc}")
+
+# See who's online
+print("Online:", chat.online_agents())
+```
+
+### CLI (for manual testing)
+
+```bash
+# Read new messages
+python mesh_chat.py --agent charlie --host audit-redis --password "..." read
+
+# Send a message
+python mesh_chat.py --agent charlie ... say "hey Oxalis, what's GPU load?"
+
+# Ask a question
+python mesh_chat.py --agent charlie ... ask "wordgen ready to wire into crawl pipeline?"
+
+# Dump full channel history
+python mesh_chat.py --agent charlie ... history
+
+# Show all advertised capabilities
+python mesh_chat.py --agent charlie ... capabilities
+
+# Who's active
+python mesh_chat.py --agent charlie ... members
+
+# Blocking listen
+python mesh_chat.py --agent charlie ... listen
+```
+
+### Redis Keys
+
+| Key | Type | Purpose |
+|-----|------|---------|
+| `mesh:chat:{channel}` | Stream | Ring buffer of chat messages (max 500) |
+| `mesh:chat:{channel}:cursor:{agent}` | String | Agent's last-read position |
+| `mesh:capabilities:{agent}` | Hash | Agent's current skill list (TTL 5min) |
+| `mesh:chat:{channel}:members` | Sorted Set | Active agents (by last-seen timestamp) |
+
+### Integration with Existing A2A Servers
+
+Add to Charlie's `charlie_server.py` startup:
+
+```python
+# In _start_queue_worker() or on_startup
+from mesh_chat import MeshChatClient
+chat = MeshChatClient("charlie", redis_host=REDIS_HOST, redis_password=REDIS_PASSWORD, pki=pki)
+chat.join()
+chat.advertise_capabilities(SKILL_HANDLERS.keys_with_descriptions())
+```
+
+Add to Oxalis's server startup similarly. That's it — both agents are now on `mesh:chat:general`.
+
+---
 
 ## Installation
 
